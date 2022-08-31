@@ -55,7 +55,6 @@ extern wiced_bt_cfg_settings_t wiced_bt_cfg_settings;
  ******************************************************/
 #define MESH_PID                0x300F
 #define MESH_VID                0x0002
-#define MESH_CACHE_REPLAY_SIZE  0x0008
 
 #define MESH_LIGHT_LIGHTNESS_DEFAULT   0
 #define MESH_LIGHT_LIGHTNESS_MIN       1
@@ -70,7 +69,11 @@ extern wiced_bt_cfg_settings_t wiced_bt_cfg_settings;
  ******************************************************/
 static void mesh_app_init(wiced_bool_t is_provisioned);
 static void mesh_app_message_handler(uint8_t element_idx, uint16_t event, void *p_data);
-static void mesh_light_lightness_process_set_level(uint8_t element_idx, wiced_bt_mesh_light_lightness_status_t *p_status);
+static void mesh_light_lightness_process_status(uint8_t element_idx, wiced_bt_mesh_light_lightness_status_t *p_status);
+
+#ifdef HCI_CONTROL
+static void mesh_light_lightness_hci_event_send_status(uint8_t element_idx, wiced_bt_mesh_light_lightness_status_t* p_data);
+#endif
 
 /******************************************************
  *          Variables Definitions
@@ -113,7 +116,6 @@ wiced_bt_mesh_core_config_t  mesh_config =
     .company_id         = MESH_COMPANY_ID_CYPRESS,                  // Company identifier assigned by the Bluetooth SIG
     .product_id         = MESH_PID,                                 // Vendor-assigned product identifier
     .vendor_id          = MESH_VID,                                 // Vendor-assigned product version identifier
-    .replay_cache_size  = MESH_CACHE_REPLAY_SIZE,                   // Number of replay protection entries, i.e. maximum number of mesh devices that can send application messages to this device.
 #if defined(LOW_POWER_NODE) && (LOW_POWER_NODE == 1)
     .features           = WICED_BT_MESH_CORE_FEATURE_BIT_LOW_POWER, // A bit field indicating the device features. In Low Power mode no Relay, no Proxy and no Friend
     .friend_cfg         =                                           // Empty Configuration of the Friend Feature
@@ -205,8 +207,8 @@ void mesh_app_message_handler(uint8_t element_idx, uint16_t event, void *p_data)
 {
     switch (event)
     {
-    case WICED_BT_MESH_LIGHT_LIGHTNESS_SET:
-        mesh_light_lightness_process_set_level(element_idx, (wiced_bt_mesh_light_lightness_status_t *)p_data);
+    case WICED_BT_MESH_LIGHT_LIGHTNESS_STATUS:
+        mesh_light_lightness_process_status(element_idx, (wiced_bt_mesh_light_lightness_status_t *)p_data);
         break;
 
     default:
@@ -218,11 +220,15 @@ void mesh_app_message_handler(uint8_t element_idx, uint16_t event, void *p_data)
 /*
  * Command from the level client is received to set the new level
  */
-void mesh_light_lightness_process_set_level(uint8_t element_idx, wiced_bt_mesh_light_lightness_status_t *p_status)
+void mesh_light_lightness_process_status(uint8_t element_idx, wiced_bt_mesh_light_lightness_status_t *p_status)
 {
     WICED_BT_TRACE("mesh light srv set level element:%d actual/target:%d/%d linear/target:%d/%d remaining_time:%d\n", element_idx,
             p_status->lightness_actual_present, p_status->lightness_linear_present,
             p_status->lightness_actual_target, p_status->lightness_linear_target, p_status->remaining_time);
+
+#ifdef HCI_CONTROL
+    mesh_light_lightness_hci_event_send_status(element_idx, p_status);
+#endif
 
     // ToDo: Set HW based on the requested present level
 }
@@ -235,3 +241,23 @@ void mesh_light_lightness_server_send_status(uint8_t element_idx, uint16_t value
 {
     wiced_bt_mesh_model_light_lightness_linear_changed(element_idx, value);
 }
+
+#ifdef HCI_CONTROL
+/*
+ * Send Light Lightness Status event over transport
+ */
+void mesh_light_lightness_hci_event_send_status(uint8_t element_idx, wiced_bt_mesh_light_lightness_status_t* p_data)
+{
+    wiced_bt_mesh_hci_event_t* p_hci_event = wiced_bt_mesh_alloc_hci_event(element_idx);
+    if (p_hci_event)
+    {
+        uint8_t* p = p_hci_event->data;
+
+        UINT16_TO_STREAM(p, p_data->lightness_actual_present);
+        UINT16_TO_STREAM(p, p_data->lightness_actual_target);
+        UINT32_TO_STREAM(p, p_data->remaining_time);
+
+        mesh_transport_send_data(HCI_CONTROL_MESH_EVENT_LIGHT_LIGHTNESS_STATUS, (uint8_t*)p_hci_event, (uint16_t)(p - (uint8_t*)p_hci_event));
+    }
+}
+#endif
